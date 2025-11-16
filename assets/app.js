@@ -1,7 +1,7 @@
-// assets/app.js
-// Dashboard Profissional — Spot (Gate/MEXC) vs Futures (MEXC) — moedas listadas <= 30 dias
-// Best-effort: tenta várias variações de symbol e usa proxies públicos quando necessário.
+// assets/app.js (versão com AllOrigins proxy)
+// Use este arquivo exatamente substituindo o atual no GitHub repo.
 
+// DOM refs
 const STATUS = document.getElementById('status');
 const TBL = document.querySelector('#tbl tbody');
 const Q = document.getElementById('q');
@@ -15,38 +15,21 @@ const INTERVAL = document.getElementById('interval');
 let timer = null;
 const DAY30_MS = 30 * 24 * 60 * 60 * 1000;
 
-// --- helper: fetch with simple CORS fallback (direct -> allorigins -> thingproxy)
-async function fetchWithFallback(url, opts = {}) {
-  // try direct
-  try {
-    const r = await fetch(url, opts);
-    if (r.ok) return r;
-  } catch (e) { /* continue */ }
-
-  // try allorigins
-  try {
-    const prox = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
-    const r2 = await fetch(prox, opts);
-    if (r2.ok) return r2;
-  } catch (e) { /* continue */ }
-
-  // try thingproxy
-  try {
-    const prox2 = 'https://thingproxy.freeboard.io/fetch/' + url;
-    const r3 = await fetch(prox2, opts);
-    if (r3.ok) return r3;
-  } catch (e) { /* continue */ }
-
-  // last try direct once more to surface any final error
-  return fetch(url, opts);
+// --- helper: fetch via AllOrigins/raw and parse JSON if possible
+async function fetchAllOrigins(url, opts = {}) {
+  const prox = 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
+  const r = await fetch(prox, opts);
+  if (!r.ok) throw new Error(`AllOrigins error ${r.status} for ${url}`);
+  const text = await r.text();
+  // try parse JSON, otherwise return raw text
+  try { return JSON.parse(text); } catch (e) { return text; }
 }
 
 // --- CoinGecko: fetch market coins, filter by last_updated <= 30 days
 async function fetchRecentCoins(limit = 250) {
   const url = `https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${limit}&page=1&sparkline=false`;
-  const r = await fetchWithFallback(url);
-  if (!r.ok) throw new Error('CoinGecko markets failed: ' + r.status);
-  const data = await r.json();
+  const data = await fetchAllOrigins(url);
+  if (!Array.isArray(data)) throw new Error('CoinGecko returned unexpected data');
   const now = Date.now();
   return data.filter(c => {
     if (!c.last_updated) return false;
@@ -55,19 +38,17 @@ async function fetchRecentCoins(limit = 250) {
   });
 }
 
-// --- CoinGecko tickers for a single coin (to get exchange tickers if needed)
+// --- CoinGecko tickers for a single coin (to map exchanges)
 async function fetchCoinTickers(coinId) {
   const url = `https://api.coingecko.com/api/v3/coins/${encodeURIComponent(coinId)}/tickers`;
   try {
-    const r = await fetchWithFallback(url);
-    if (!r.ok) return null;
-    return await r.json();
+    const data = await fetchAllOrigins(url);
+    return data && data.tickers ? data : null;
   } catch (e) { return null; }
 }
 
-// --- try to get spot price from Gate.io
+// --- Gate.io spot: uses /spot/tickers?currency_pair=PAIR (via AllOrigins)
 async function getGateSpotPrice(symbol) {
-  // try formats: SYMBOL_USDT, SYMBOL-USDT? Gate uses underscore: BTC_USDT
   const tries = [
     symbol.toUpperCase() + '_USDT',
     symbol.toUpperCase() + '_USD',
@@ -76,38 +57,30 @@ async function getGateSpotPrice(symbol) {
   for (const sym of tries) {
     try {
       const url = `https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${encodeURIComponent(sym)}`;
-      const r = await fetchWithFallback(url);
-      if (!r.ok) continue;
-      const j = await r.json();
-      if (Array.isArray(j) && j.length>0) {
+      const j = await fetchAllOrigins(url);
+      // Gate returns array when using that endpoint
+      if (Array.isArray(j) && j.length > 0) {
         const item = j[0];
         const price = parseFloat(item.last) || null;
         const vol = parseFloat(item.base_volume) || parseFloat(item.quote_volume) || null;
         if (price) return { pair: item.currency_pair || sym, price, vol };
       } else if (j && j.last) {
         const price = parseFloat(j.last) || null;
-        const vol = parseFloat(j.base_volume)||null;
+        const vol = parseFloat(j.base_volume) || null;
         if (price) return { pair: sym, price, vol };
       }
-    } catch (e) { /* ignore */ }
+    } catch (e) { /* ignore and continue */ }
   }
   return null;
 }
 
-// --- try to get spot price from MEXC spot (REST)
+// --- MEXC spot API
 async function getMexcSpotPrice(symbol) {
-  // try formats: SYMBOLUSDT, SYMBOL_USDT
-  const tries = [
-    symbol.toUpperCase() + 'USDT',
-    symbol.toUpperCase() + '_USDT',
-  ];
+  const tries = [ symbol.toUpperCase() + 'USDT', symbol.toUpperCase() + '_USDT' ];
   for (const sym of tries) {
     try {
       const url = `https://api.mexc.com/api/v3/ticker/price?symbol=${encodeURIComponent(sym)}`;
-      const r = await fetchWithFallback(url);
-      if (!r.ok) continue;
-      const j = await r.json();
-      // mexc returns {symbol, price}
+      const j = await fetchAllOrigins(url);
       if (j && (j.price || j.last)) {
         const price = parseFloat(j.price || j.last) || null;
         return { pair: sym, price, vol: null };
@@ -117,41 +90,37 @@ async function getMexcSpotPrice(symbol) {
   return null;
 }
 
-// --- try to get futures price from MEXC Contract API
+// --- MEXC futures (contract) API
 async function getMexcFuturesPrice(symbol) {
-  // try SYMBOL_USDT
   const sym = symbol.toUpperCase() + '_USDT';
   try {
     const url = `https://contract.mexc.com/api/v1/contract/ticker?symbol=${encodeURIComponent(sym)}`;
-    const r = await fetchWithFallback(url);
-    if (!r.ok) return null;
-    const j = await r.json();
-    // expected shape: {data: {ticker: {lastPrice:...}}} or [{symbol,...}]
+    const j = await fetchAllOrigins(url);
+    // common shapes: { data: { ticker: { lastPrice } } } or [{ lastPrice }]
     if (j && j.data && j.data.ticker && j.data.ticker.lastPrice) {
       const price = parseFloat(j.data.ticker.lastPrice);
-      return { pair: sym, price, vol: null };
+      if (price) return { pair: sym, price, vol: null };
     }
-    // sometimes API returns object with "price"
-    if (j && j.price) {
-      return { pair: sym, price: parseFloat(j.price), vol: null };
+    if (Array.isArray(j) && j.length > 0 && j[0].lastPrice) {
+      const price = parseFloat(j[0].lastPrice);
+      if (price) return { pair: sym, price, vol: null };
     }
-    // fallback if array
-    if (Array.isArray(j) && j.length>0 && j[0].lastPrice) {
-      return { pair: sym, price: parseFloat(j[0].lastPrice), vol: null };
+    if (j && j.lastPrice) {
+      const price = parseFloat(j.lastPrice);
+      if (price) return { pair: sym, price, vol: null };
     }
   } catch (e) { /* ignore */ }
   return null;
 }
 
-// --- assemble for one coin: try coin tickers first for reliable mapping, else guess symbols
+// --- analyze coin: gather spot/futures via tickers or direct exchange APIs
 async function analyzeCoin(c) {
   const symbol = (c.symbol || '').toUpperCase();
   let gate = null, mexcSpot = null, mexcFut = null;
 
-  // 1) try coin tickers from CoinGecko to find direct matching markets
+  // 1) try coin tickers from CoinGecko for reliable mapping
   const tickers = await fetchCoinTickers(c.id).catch(()=>null);
   if (tickers && tickers.tickers) {
-    // find market.identifier gate-io, mexc
     for (const t of tickers.tickers) {
       const id = (t.market && t.market.identifier) ? t.market.identifier.toLowerCase() : null;
       try {
@@ -169,19 +138,16 @@ async function analyzeCoin(c) {
     }
   }
 
-  // 2) fallback: try direct exchange APIs (common symbols)
+  // 2) fallback to direct exchange REST (common symbol patterns)
   if (!gate) gate = await getGateSpotPrice(symbol).catch(()=>null);
   if (!mexcSpot) mexcSpot = await getMexcSpotPrice(symbol).catch(()=>null);
   if (!mexcFut) mexcFut = await getMexcFuturesPrice(symbol).catch(()=>null);
 
-  // compute spot price as average of available spot sources (prefers gate then mexc)
   const spotPrices = [];
   if (gate && gate.price) spotPrices.push(gate.price);
   if (mexcSpot && mexcSpot.price) spotPrices.push(mexcSpot.price);
   const spotAvg = spotPrices.length ? (spotPrices.reduce((a,b)=>a+b,0)/spotPrices.length) : null;
   const futPrice = mexcFut && mexcFut.price ? mexcFut.price : null;
-
-  // spread between futures and spot average
   const spread_pct = (spotAvg && futPrice) ? ((futPrice - spotAvg) / spotAvg) * 100 : null;
 
   return {
@@ -199,27 +165,27 @@ async function analyzeCoin(c) {
   };
 }
 
-// --- main scan loop
+// --- main scan (batched)
 async function scan() {
   try {
-    setStatus('Buscando moedas recentes (30 dias) via CoinGecko...');
+    setStatus('Buscando moedas recentes (<=30 dias) via CoinGecko (AllOrigins)...');
     const coins = await fetchRecentCoins(100);
     if (!coins || !coins.length) {
       setStatus('Nenhuma moeda recente encontrada.');
       return;
     }
 
-    setStatus(`Encontradas ${coins.length} moedas recentes. Verificando preços (isso pode demorar)...`);
+    setStatus(`Encontradas ${coins.length} moedas. Verificando preços (pode demorar)...`);
     const results = [];
-
-    // limit concurrency to avoid many parallel calls (map in batches)
     const BATCH = 6;
     for (let i = 0; i < coins.length; i += BATCH) {
       const batch = coins.slice(i, i+BATCH);
       const promises = batch.map(c => analyzeCoin(c));
       const outs = await Promise.all(promises);
       outs.forEach(o => { if (o) results.push(o); });
-      setStatus(`Processado ${Math.min(i+BATCH, coins.length)}/${coins.length} moedas...`);
+      setStatus(`Processado ${Math.min(i+BATCH, coins.length)}/${coins.length}...`);
+      // small delay to be polite to APIs
+      await new Promise(r => setTimeout(r, 600));
     }
 
     render(results);
@@ -229,13 +195,13 @@ async function scan() {
   }
 }
 
-// --- render results to table with filters
+// --- render and filtering
 function render(data) {
   const q = Q.value.trim().toLowerCase();
   const minSp = parseFloat(MIN_SP.value) || 0;
   const minVol = parseFloat(MIN_VOL.value) || 0;
 
-  let filtered = data.filter(d => {
+  const filtered = data.filter(d => {
     if (!d.spread_pct) return false;
     if (Math.abs(d.spread_pct) < Math.abs(minSp)) return false;
     const volGate = (d.gate && d.gate.vol) ? d.gate.vol : 0;
@@ -245,7 +211,6 @@ function render(data) {
     return d.symbol.toLowerCase().includes(q) || (d.name && d.name.toLowerCase().includes(q)) || (d.id && d.id.toLowerCase().includes(q));
   });
 
-  // sort by absolute spread desc
   filtered.sort((a,b) => Math.abs(b.spread_pct || 0) - Math.abs(a.spread_pct || 0));
 
   TBL.innerHTML = '';
@@ -276,7 +241,7 @@ function render(data) {
   setStatus(`Mostrando ${filtered.length} pares • Atualizado: ${new Date().toLocaleTimeString()}`);
 }
 
-// --- CSV export (current filtered table)
+// --- CSV export
 EXPORT.addEventListener('click', () => {
   const rows = [['symbol','name','gate_price','mexc_spot_price','mexc_fut_price','spread_pct','gate_vol','mexc_vol','listed_at']];
   document.querySelectorAll('#tbl tbody tr').forEach(tr => {
@@ -286,7 +251,7 @@ EXPORT.addEventListener('click', () => {
       cols[0].querySelector('.small') ? cols[0].querySelector('.small').textContent : '',
       cols[1].querySelector('div') ? cols[1].querySelector('div').textContent : '',
       cols[2].querySelector('div') ? cols[2].querySelector('div').textContent : '',
-      '', // futures column not shown explicitly as number; could be added
+      '', // futures (if needed refine)
       cols[3] ? cols[3].textContent : '',
       cols[4] ? cols[4].textContent : '',
       cols[5] ? cols[5].textContent : '',
@@ -314,5 +279,5 @@ function startLoop() {
 }
 function stopLoop() { if (timer) clearInterval(timer); timer = null; }
 
-// initial
+// initial run
 startLoop();
