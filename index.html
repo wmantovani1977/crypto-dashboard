@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Crypto Arb Dashboard — Gate ↔ MEXC</title>
+<link rel="stylesheet" href="assets/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Crypto Arb Dashboard</div>
+  <div class="subtitle">Gate.io ↔ MEXC — Monitoramento Público</div>
+</header>
+
+<main class="container">
+  <section class="controls">
+    <div class="control-group">
+      <label>Filtro (símbolo ou nome)</label>
+      <input id="q" placeholder="Ex: SOL, bitcoin">
+    </div>
+    <div class="control-group">
+      <label>Min Spread (%)</label>
+      <input id="minSpread" type="number" value="1" step="0.1">
+    </div>
+    <div class="control-group">
+      <label>Min Volume (USD)</label>
+      <input id="minVolume" type="number" value="1000" step="100">
+    </div>
+    <div class="control-group buttons">
+      <button id="refresh">Atualizar</button>
+      <button id="export">Export CSV</button>
+      <label class="small">Auto</label>
+      <input id="autorefresh" type="checkbox" checked>
+      <label class="small">Interval (s)</label>
+      <input id="interval" type="number" value="10" min="2" style="width:70px">
+    </div>
+  </section>
+
+  <section class="table-wrap">
+    <table id="tbl">
+      <thead>
+        <tr>
+          <th>Moeda</th>
+          <th>Gate</th>
+          <th>MEXC</th>
+          <th class="r">Spread %</th>
+          <th class="r">Vol Gate</th>
+          <th class="r">Vol MEXC</th>
+          <th class="small">Última</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div id="status" class="status">Carregando…</div>
+  </section>
+
+  <footer class="footer">
+    Dados fornecidos via CoinGecko. 
+    Esta versão roda 100% no navegador — ideal para GitHub Pages.
+  </footer>
+</main>
+
+<script src="assets/app.js"></script>
+</body>
+</html>
