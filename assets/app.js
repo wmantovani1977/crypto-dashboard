@@ -1,107 +1,136 @@
-// ======================
-// CONFIGURAÇÕES
-// ======================
-const SPREAD_MINIMO = 0.00;     // Spread mínimo em %
-const VOLUME_MINIMO = 0;        // Volume mínimo em USD
-const DIAS_NOVAS = 30;          // Moedas lançadas nos últimos X dias
+// =======================
+// CONFIGURAÇÕES INICIAIS
+// =======================
+const DIAS_NOVAS = 30;   // moedas com até 30 dias
+const API_PROXY = url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
 
-// ======================
-// FUNÇÃO FETCH VIA PROXY (SEM CORS)
-// ======================
+// elementos do DOM
+const tabela = document.querySelector("#tbl tbody");
+const statusBox = document.getElementById("status");
+const inputSpread = document.getElementById("minSpread");
+const inputVolume = document.getElementById("minVolume");
+const inputFiltro = document.getElementById("q");
+const chkAuto = document.getElementById("autorefresh");
+const intervalInput = document.getElementById("interval");
+
+// =======================
+// FETCH VIA PROXY SEM CORS
+// =======================
 async function fetchProxy(url) {
-    const proxy = "https://api.allorigins.win/raw?url=" + encodeURIComponent(url);
     try {
-        const resp = await fetch(proxy);
-        return await resp.json();
+        const r = await fetch(API_PROXY(url));
+        return await r.json();
     } catch (e) {
-        console.error("Erro no fetch via proxy:", url, e);
+        console.error("Erro:", url, e);
         return null;
     }
 }
 
-// ======================
+// =======================
 // BUSCAR MOEDAS NOVAS (COINGECKO)
-// ======================
+// =======================
 async function buscarMoedasNovas() {
-    const url = "https://api.coingecko.com/api/v3/coins/list?include_platform=false";
-    const moedas = await fetchProxy(url);
+    let url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=200&page=1&sparkline=false";
+    let data = await fetchProxy(url);
 
-    if (!moedas) return [];
+    if (!data) return [];
 
-    const hoje = new Date();
-    return moedas.filter(m => {
-        if (!m.id) return false;
-
-        const tempo = new Date(m.id * 1000);
-        const diff = (hoje - tempo) / (1000 * 60 * 60 * 24);
-
-        return diff <= DIAS_NOVAS;
-    }).slice(0, 50); // limitar a 50 moedas para performance
+    const hoje = Date.now();
+    return data.filter(m => {
+        if (!m.atl_date) return false;
+        const lanc = new Date(m.atl_date).getTime();
+        const dias = (hoje - lanc) / (1000 * 60 * 60 * 24);
+        return dias <= DIAS_NOVAS;
+    });
 }
 
-// ======================
-// PREÇOS EM CADA CORRETORA
-// ======================
-async function precoGateSpot(simbolo) {
+// =======================
+// PREÇOS DAS CORRETORAS
+// =======================
+async function precoGate(simbolo) {
     const url = `https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${simbolo}_USDT`;
-    const data = await fetchProxy(url);
-    return data && data[0] ? parseFloat(data[0].last) : null;
+    const r = await fetchProxy(url);
+    return r && r[0] ? {
+        price: parseFloat(r[0].last || 0),
+        vol: parseFloat(r[0].base_volume || 0)
+    } : null;
 }
 
-async function precoMexcFutures(simbolo) {
+async function precoMexc(simbolo) {
     const url = `https://contract.mexc.com/api/v1/contract/ticker?symbol=${simbolo}_USDT`;
-    const data = await fetchProxy(url);
-    return data && data.data ? parseFloat(data.data.lastPrice) : null;
+    const r = await fetchProxy(url);
+    return r && r.data ? {
+        price: parseFloat(r.data.lastPrice || 0),
+        vol: parseFloat(r.data.volume24 || 0)
+    } : null;
 }
 
-// ======================
+// =======================
 // ATUALIZAR DASHBOARD
-// ======================
-async function atualizarDashboard() {
-    const tabela = document.getElementById("tabela-moedas");
-    tabela.innerHTML = `<tr><td colspan="5">Carregando...</td></tr>`;
+// =======================
+async function atualizar() {
+    tabela.innerHTML = "";
+    statusBox.textContent = "Carregando…";
+
+    const minSpread = parseFloat(inputSpread.value) || 0;
+    const minVolume = parseFloat(inputVolume.value) || 0;
+    const filtro = inputFiltro.value.toLowerCase();
 
     const moedas = await buscarMoedasNovas();
-
     if (!moedas.length) {
-        tabela.innerHTML = `<tr><td colspan="5">Nenhuma moeda encontrada</td></tr>`;
+        statusBox.textContent = "Nenhuma moeda encontrada.";
         return;
     }
 
-    tabela.innerHTML = "";
+    let count = 0;
 
-    for (const m of moedas) {
-        const simbolo = (m.symbol || "").toUpperCase();
+    for (let m of moedas) {
+        const simbolo = m.symbol.toUpperCase();
 
-        // Buscar preços
-        const precoGate = await precoGateSpot(simbolo);
-        const precoMexc = await precoMexcFutures(simbolo);
+        if (filtro && !simbolo.toLowerCase().includes(filtro) && !m.name.toLowerCase().includes(filtro))
+            continue;
 
-        if (!precoGate || !precoMexc) continue;
+        const gate = await precoGate(simbolo);
+        const mexc = await precoMexc(simbolo);
 
-        // Calcular spread
-        const spread = ((precoMexc - precoGate) / precoGate) * 100;
+        if (!gate || !mexc) continue;
 
-        if (spread < SPREAD_MINIMO) continue;
+        const spread = ((mexc.price - gate.price) / gate.price) * 100;
 
-        // Inserir no HTML
+        if (spread < minSpread) continue;
+        if (gate.vol < minVolume && mexc.vol < minVolume) continue;
+
         tabela.innerHTML += `
             <tr>
                 <td>${simbolo}</td>
-                <td>$${precoGate.toFixed(4)}</td>
-                <td>$${precoMexc.toFixed(4)}</td>
-                <td>${spread.toFixed(2)}%</td>
+                <td>$${gate.price.toFixed(4)}</td>
+                <td>$${mexc.price.toFixed(4)}</td>
+                <td class="r">${spread.toFixed(2)}%</td>
+                <td class="r">${gate.vol.toFixed(0)}</td>
+                <td class="r">${mexc.vol.toFixed(0)}</td>
+                <td class="small">${new Date().toLocaleTimeString()}</td>
             </tr>
         `;
+
+        count++;
     }
 
-    if (tabela.innerHTML.trim() === "") {
-        tabela.innerHTML = `<tr><td colspan="5">Nenhuma oportunidade encontrada</td></tr>`;
-    }
+    statusBox.textContent = count ? `${count} oportunidades encontradas.` : "Nenhuma oportunidade dentro dos filtros.";
 }
 
-// ======================
-// LOOP A CADA 10s
-// ======================
-setInterval(atualizarDashboard, 10000);
-atualizarDashboard();
+// =======================
+// AUTOREFRESH
+// =======================
+setInterval(() => {
+    if (chkAuto.checked) atualizar();
+}, 1000);
+
+
+// =======================
+// EVENTOS
+// =======================
+document.getElementById("refresh").onclick = atualizar;
+
+
+// inicia
+atualizar();
