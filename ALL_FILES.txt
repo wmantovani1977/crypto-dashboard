@@ -1,0 +1,76 @@
+========================
+backend/main.py
+========================
+from fastapi import FastAPI, WebSocket
+import ccxt.async_support as ccxt
+import asyncio
+
+app = FastAPI()
+
+gate = ccxt.gate()
+mexc = ccxt.mexc()
+
+async def fetch(symbol):
+    try:
+        g = await gate.fetch_ticker(symbol)
+        m = await mexc.fetch_ticker(symbol)
+        return {
+            "symbol": symbol,
+            "gate": g.get("last"),
+            "mexc": m.get("last"),
+            "spread": (m.get("last")-g.get("last"))/g.get("last")*100 if g.get("last") and m.get("last") else None
+        }
+    except:
+        return None
+
+@app.get("/api/scan")
+async def scan():
+    return await fetch("BTC/USDT")
+
+@app.websocket("/ws/updates")
+async def ws(ws: WebSocket):
+    await ws.accept()
+    while True:
+        data = await fetch("BTC/USDT")
+        await ws.send_json(data)
+        await asyncio.sleep(5)
+
+
+========================
+backend/requirements.txt
+========================
+fastapi
+uvicorn
+ccxt
+
+
+========================
+frontend/index.html
+========================
+<!DOCTYPE html>
+<html>
+<body style="background:#0d1117;color:white;font-family:Arial;">
+<h1>Crypto Dashboard</h1>
+<div id='d'>Carregando...</div>
+
+<script>
+let ws = new WebSocket("wss://SEU_BACKEND_AQUI/ws/updates");
+ws.onmessage = e => {
+    let d = JSON.parse(e.data);
+    document.getElementById('d').innerHTML = JSON.stringify(d, null, 2);
+}
+</script>
+</body>
+</html>
+
+
+========================
+render.yaml
+========================
+services:
+- type: web
+  name: crypto-backend
+  env: python
+  buildCommand: pip install -r backend/requirements.txt
+  startCommand: uvicorn backend.main:app --host 0.0.0.0 --port 10000
+
